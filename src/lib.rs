@@ -3,17 +3,15 @@
 //! some registry of known execution blocks.
 //!
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
-use std::hash::BuildHasher;
 
 /// Finds matches of execution blocks inside a program with the specified
 /// registry of known blocks. For each block in the program returns a vector with
-/// block start position wrapped by 'Matched' if a block was found in the registry,
-/// 'NotMatched' if a block wasn't found in the registry. Note that order in
+/// block start position and block index in the registry. Note that order in
 /// the result vector is corresponded to order of 'End' instructions for each block.
 /// It means that at the first position of the result vector will be placed the
 /// first closed block (not the first started block).
@@ -23,8 +21,8 @@ use std::hash::BuildHasher;
 /// * known_blocks - The registry of known execution blocks.
 /// * program - The program is a vector of blocks for matching with the registry.
 ///
-pub fn find_matches<S: BuildHasher>(
-    known_blocks: &HashSet<&[Instruction], S>,
+pub fn find_matches(
+    known_blocks: &[&[Instruction]],
     program: &[Instruction],
 ) -> Result<Vec<BlockInfo>, MatchError> {
     use self::Instruction::*;
@@ -32,6 +30,12 @@ pub fn find_matches<S: BuildHasher>(
     if program.is_empty() {
         return Err(MatchError::NoOneBlockFound);
     }
+
+    let register: HashMap<&[Instruction], usize> = known_blocks
+        .iter()
+        .enumerate()
+        .map(|(idx, ins)| (*ins, idx))
+        .collect();
 
     let mut block_stack = Vec::new();
 
@@ -49,13 +53,10 @@ pub fn find_matches<S: BuildHasher>(
                     .map(|block_start_idx| {
                         let block = &program[block_start_idx..=ins_idx];
 
-                        let result = if known_blocks.contains(block) {
-                            BlockInfo::Matched(block_start_idx)
-                        } else {
-                            BlockInfo::NotMatched(block_start_idx)
-                        };
-
-                        Ok(result)
+                        Ok(BlockInfo {
+                            block_start_idx,
+                            registry_idx: register.get(block).map(Clone::clone),
+                        })
                     })
                     .or_else(|| {
                         let msg = format!(
@@ -92,21 +93,12 @@ pub enum Instruction {
     End,
 }
 
-/// Indicates that a block was/wasn't matched with some block from known blocks.
-/// Also contains an index of first instruction for this block in the whole program.
 #[derive(Debug, PartialOrd, PartialEq)]
-pub enum BlockInfo {
-    Matched(usize),
-    NotMatched(usize),
-}
-
-impl BlockInfo {
-    #[allow(dead_code)]
-    pub fn start_position(&self) -> Result<usize, MatchError> {
-        match self {
-            BlockInfo::Matched(pos) | BlockInfo::NotMatched(pos) => Ok(pos.to_owned()),
-        }
-    }
+pub struct BlockInfo {
+    /// An index of first block instruction in the whole program
+    block_start_idx: usize,
+    /// An index of this block in registry
+    registry_idx: Option<usize>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq)]
@@ -131,20 +123,10 @@ impl Display for MatchError {
 #[cfg(test)]
 mod tests {
     use crate::find_matches;
-    use crate::BlockInfo::*;
+    use crate::BlockInfo;
     use crate::Instruction;
     use crate::Instruction::*;
     use crate::MatchError;
-    use std::collections::HashSet;
-
-    fn default_register() -> HashSet<&'static [Instruction]> {
-        let mut known_blocks: HashSet<&[Instruction]> = HashSet::new();
-        known_blocks.insert(&[Begin, Push(1), End]);
-        known_blocks.insert(&[If, Push(2), Not, Push(3), End]);
-        known_blocks.insert(&[If, Push(2), Push(3), End]);
-        known_blocks.insert(&[If, End]);
-        known_blocks
-    }
 
     #[test]
     fn no_blocks_found() {
@@ -200,7 +182,7 @@ mod tests {
             End,
         ];
 
-        let expected = vec![Matched(1), Matched(6), NotMatched(5), NotMatched(0)];
+        let expected = vec![matched(1, 2), matched(6, 3), not_matched(5), not_matched(0)];
         let result = find_matches(&known_blocks, &program);
 
         assert_eq!(expected, result.unwrap());
@@ -215,8 +197,31 @@ mod tests {
         let result = find_matches(&register, &program).unwrap();
 
         assert_eq!(deeps_lvl, result.len() - 1);
-        assert_eq!(&NotMatched(0), result.get(deeps_lvl).unwrap());
-        assert_eq!(&Matched(deeps_lvl * 2 - 1), result.get(0).unwrap());
+        assert_eq!(&not_matched(0), result.get(deeps_lvl).unwrap());
+        assert_eq!(&matched(deeps_lvl * 2 - 1, 2), result.get(0).unwrap());
+    }
+
+    fn matched(block_start_idx: usize, registry_idx: usize) -> BlockInfo {
+        BlockInfo {
+            block_start_idx,
+            registry_idx: Some(registry_idx),
+        }
+    }
+
+    fn not_matched(block_start_idx: usize) -> BlockInfo {
+        BlockInfo {
+            block_start_idx,
+            registry_idx: None,
+        }
+    }
+
+    fn default_register() -> Vec<&'static [Instruction]> {
+        let mut known_blocks: Vec<&'static [Instruction]> = Vec::new();
+        known_blocks.push(&[Begin, Push(1), End]);
+        known_blocks.push(&[If, Push(2), Not, Push(3), End]);
+        known_blocks.push(&[If, Push(2), Push(3), End]);
+        known_blocks.push(&[If, End]);
+        known_blocks
     }
 
     /// Creates a program with specified deeps level.
