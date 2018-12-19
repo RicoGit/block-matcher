@@ -8,6 +8,7 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::hash::BuildHasher;
 
 /// Finds matches of execution blocks inside a program with the specified
 /// registry of known blocks. For each block in the program returns a vector with
@@ -21,16 +22,16 @@ use std::fmt::Formatter;
 ///
 /// * known_blocks - The registry of known execution blocks.
 /// * program - The program is a vector of blocks for matching with the registry.
-pub fn find_matches(
-    known_blocks: &HashSet<&[Instruction]>,
+///
+pub fn find_matches<S: BuildHasher>(
+    known_blocks: &HashSet<&[Instruction], S>,
     program: &[Instruction],
 ) -> Result<Vec<BlockInfo>, MatchError> {
     use self::Instruction::*;
 
-    // todo try to handle in generic maner
-    //    if program.get(0) != Some(&Begin) {
-    //        return Err(MatchError);  // todo
-    //    }
+    if program.is_empty() {
+        return Err(MatchError::NoOneBlockFound);
+    }
 
     let mut block_stack = Vec::new();
 
@@ -43,47 +44,33 @@ pub fn find_matches(
                     block_stack.push(ins_idx);
                     None
                 }
-                End => {
-                    block_stack.pop().map(|block_start_idx| {
+                End => block_stack
+                    .pop()
+                    .map(|block_start_idx| {
                         let block = &program[block_start_idx..=ins_idx];
 
-                        if known_blocks.contains(block) {
+                        let result = if known_blocks.contains(block) {
                             BlockInfo::Matched(block_start_idx)
                         } else {
                             BlockInfo::NotMatched(block_start_idx)
-                        }
-                    })
+                        };
 
-                    // todo handle invalid format
-                }
+                        Ok(result)
+                    })
+                    .or_else(|| Some(Err(MatchError::InvalidBlock("".to_string())))),
                 _ => None, // do nothing
             }
         })
         .collect();
 
-    Ok(result)
-}
-
-// todo functional version
-
-// todo ?
-#[derive(Debug)]
-pub struct MatchError;
-
-// case 1 Missing Begin Instrustion
-// case 2 Missing End instruction
-// better
-// Number of Instructions that open block isn't correspond number of
-
-impl Error for MatchError {}
-
-impl Display for MatchError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "Match error!")
+    if block_stack.is_empty() {
+        result
+    } else {
+        Err(MatchError::InvalidBlock("".to_string()))
     }
 }
 
-/// Vm Instruction set.
+/// VM instruction set.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum Instruction {
     Push(usize),
@@ -95,11 +82,10 @@ pub enum Instruction {
     End,
 }
 
-/// Contains information about matching Block.
-// todo
+/// Indicates that a block was/wasn't matched with some block from known blocks.
+/// Also contains an index of first instruction for this block in the whole program.
 #[derive(Debug, PartialOrd, PartialEq)]
 pub enum BlockInfo {
-    /// Tells that block matched with
     Matched(usize),
     NotMatched(usize),
 }
@@ -113,37 +99,77 @@ impl BlockInfo {
     }
 }
 
-// todo write tests
+#[derive(Debug, PartialOrd, PartialEq)]
+pub enum MatchError {
+    NoOneBlockFound,
+    InvalidBlock(String),
+}
+
+impl Error for MatchError {}
+
+impl Display for MatchError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            MatchError::NoOneBlockFound => {
+                write!(f, "Input program should contain at least one block")
+            }
+            MatchError::InvalidBlock(msg) => write!(f, "Invalid block: {}", msg),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::find_matches;
     use crate::BlockInfo::*;
     use crate::Instruction;
     use crate::Instruction::*;
+    use crate::MatchError;
     use std::collections::HashSet;
 
-    #[test]
-    fn no_blocks_found() {
-        // should returns Error
-    }
-
-    #[test]
-    fn wrong_first_ins() {
-        // should be Begin only
-    }
-
-    #[test]
-    fn not_closed_block() {
-        // all blocks should be closed/valid
-    }
-
-    #[test]
-    fn correct_program() {
+    fn default_register() -> HashSet<&'static [Instruction]> {
         let mut known_blocks: HashSet<&[Instruction]> = HashSet::new();
         known_blocks.insert(&[Begin, Push(1), End]);
         known_blocks.insert(&[If, Push(2), Not, Push(3), End]);
         known_blocks.insert(&[If, Push(2), Push(3), End]);
         known_blocks.insert(&[If, End]);
+        known_blocks
+    }
+
+    #[test]
+    fn no_blocks_found() {
+        let register = default_register();
+        let program = vec![];
+
+        let result = find_matches(&register, &program);
+
+        assert_eq!(MatchError::NoOneBlockFound, result.unwrap_err())
+    }
+
+    #[test]
+    fn not_opened_block() {
+        let register = default_register();
+        let program = vec![Or, End];
+
+        let result = find_matches(&register, &program);
+
+        assert_eq!("Invalid block: ", result.unwrap_err().to_string())
+    }
+
+    #[test]
+    fn not_closed_block() {
+        let register = default_register();
+        let program = vec![Begin];
+
+        let result = find_matches(&register, &program);
+
+        assert_eq!("Invalid block: ", result.unwrap_err().to_string())
+    }
+
+    #[test]
+    fn correct_program() {
+        let known_blocks = default_register();
+
         let program = vec![
             Begin,
             If,
@@ -166,7 +192,29 @@ mod tests {
 
     #[test]
     fn big_correct_program() {
-        // generates a big program with deep level of recursion
+        let deep_lvl = 1000;
+        let register = default_register();
+        let program = create_program(deep_lvl);
 
+        let result = find_matches(&register, &program).unwrap();
+
+        assert_eq!(deep_lvl, result.len() - 1);
+        assert_eq!(&NotMatched(0), result.get(deep_lvl).unwrap());
+        assert_eq!(&Matched(deep_lvl * 2 - 1), result.get(0).unwrap());
     }
+
+    fn create_program(deep_lvl: usize) -> Vec<Instruction> {
+        let mut program = vec![Begin];
+        for _idx in 0..deep_lvl {
+            program.push(If);
+            program.push(Push(2));
+        }
+        for _idx in 0..deep_lvl {
+            program.push(Push(3));
+            program.push(End);
+        }
+        program.push(End);
+        program
+    }
+
 }
