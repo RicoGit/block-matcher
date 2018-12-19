@@ -57,7 +57,13 @@ pub fn find_matches<S: BuildHasher>(
 
                         Ok(result)
                     })
-                    .or_else(|| Some(Err(MatchError::InvalidBlock("".to_string())))),
+                    .or_else(|| {
+                        let msg = format!(
+                            "Attempt to close the non-existent block, at the position: {}",
+                            ins_idx
+                        );
+                        Some(Err(MatchError::InvalidBlock(msg)))
+                    }),
                 _ => None, // do nothing
             }
         })
@@ -66,7 +72,11 @@ pub fn find_matches<S: BuildHasher>(
     if block_stack.is_empty() {
         result
     } else {
-        Err(MatchError::InvalidBlock("".to_string()))
+        let msg = format!(
+            "Next blocks weren't be closed. The start blocks positions: {:?}",
+            block_stack
+        );
+        Err(MatchError::InvalidBlock(msg))
     }
 }
 
@@ -149,21 +159,27 @@ mod tests {
     #[test]
     fn not_opened_block() {
         let register = default_register();
-        let program = vec![Or, End];
+        let program = vec![Or, End, Push(1), End];
 
         let result = find_matches(&register, &program);
 
-        assert_eq!("Invalid block: ", result.unwrap_err().to_string())
+        assert_eq!(
+            "Invalid block: Attempt to close the non-existent block, at the position: 1",
+            result.unwrap_err().to_string()
+        )
     }
 
     #[test]
     fn not_closed_block() {
         let register = default_register();
-        let program = vec![Begin];
+        let program = vec![Begin, Push(2), If, End, If];
 
         let result = find_matches(&register, &program);
 
-        assert_eq!("Invalid block: ", result.unwrap_err().to_string())
+        assert_eq!(
+            "Invalid block: Next blocks weren't be closed. The start blocks positions: [0, 4]",
+            result.unwrap_err().to_string()
+        )
     }
 
     #[test]
@@ -192,29 +208,29 @@ mod tests {
 
     #[test]
     fn big_correct_program() {
-        let deep_lvl = 1000;
+        let deeps_lvl = 1000;
         let register = default_register();
-        let program = create_program(deep_lvl);
+        let program = create_program(deeps_lvl);
 
         let result = find_matches(&register, &program).unwrap();
 
-        assert_eq!(deep_lvl, result.len() - 1);
-        assert_eq!(&NotMatched(0), result.get(deep_lvl).unwrap());
-        assert_eq!(&Matched(deep_lvl * 2 - 1), result.get(0).unwrap());
+        assert_eq!(deeps_lvl, result.len() - 1);
+        assert_eq!(&NotMatched(0), result.get(deeps_lvl).unwrap());
+        assert_eq!(&Matched(deeps_lvl * 2 - 1), result.get(0).unwrap());
     }
 
-    fn create_program(deep_lvl: usize) -> Vec<Instruction> {
+    /// Creates a program with specified deeps level.
+    fn create_program(deeps_lvl: usize) -> Vec<Instruction> {
         let mut program = vec![Begin];
-        for _idx in 0..deep_lvl {
+        for _idx in 0..deeps_lvl {
             program.push(If);
             program.push(Push(2));
         }
-        for _idx in 0..deep_lvl {
+        for _idx in 0..deeps_lvl {
             program.push(Push(3));
             program.push(End);
         }
         program.push(End);
         program
     }
-
 }
